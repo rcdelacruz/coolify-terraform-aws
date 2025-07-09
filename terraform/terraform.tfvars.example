@@ -1,0 +1,23 @@
+# terraform/terraform.tfvars.example
+# Copy this file to terraform.tfvars and fill in your values
+
+# AWS Configuration
+region            = "us-east-1"
+availability_zone = "us-east-1a"
+
+# EC2 Configuration
+instance_type = "t4g.large"
+key_name     = "your-key-pair-name"  # REQUIRED: Create this in AWS console first
+
+# Domain Configuration (optional)
+domain_name = "yourdomain.com"  # Leave empty "" if not using custom domain
+
+# Security Configuration
+allowed_cidrs = [
+  "203.0.113.0/32",    # Replace with your IP address
+  "198.51.100.0/24"    # Replace with your office/team IP range
+]
+
+# Monitoring and Backup
+enable_monitoring       = true
+backup_retention_days   = 7
