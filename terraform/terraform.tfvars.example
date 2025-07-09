@@ -9,9 +9,6 @@ availability_zone = "us-east-1a"
 instance_type = "t4g.large"
 key_name     = "your-key-pair-name"  # REQUIRED: Create this in AWS console first
 
-# Cloudflare Tunnel Configuration
-cloudflare_tunnel_token = "your-cloudflare-tunnel-token"  # Get from Cloudflare dashboard for *.stratpoint.io
-
 # Security Configuration
 allowed_cidrs = [
   "203.0.113.0/32",    # Replace with your IP address
@@ -21,3 +18,6 @@ allowed_cidrs = [
 # Monitoring and Backup
 enable_monitoring       = true
 backup_retention_days   = 7
+
+# NOTE: Configure your Cloudflare Tunnel manually in the Cloudflare dashboard
+# after deployment using the hostname mappings from terraform output
