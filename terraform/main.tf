@@ -44,13 +44,6 @@ variable "key_name" {
   type        = string
 }
 
-variable "cloudflare_tunnel_token" {
-  description = "Cloudflare Tunnel token for stratpoint.io wildcard"
-  type        = string
-  default     = ""
-  sensitive   = true
-}
-
 variable "allowed_cidrs" {
   description = "CIDR blocks allowed to access SSH and Coolify dashboard"
   type        = list(string)
@@ -186,12 +179,20 @@ resource "aws_security_group" "coolify_sg" {
     cidr_blocks = var.allowed_cidrs
   }
 
-  # Docker daemon (if needed for remote access)
+  # Coolify realtime server (for Cloudflare Tunnel)
   ingress {
-    from_port   = 2376
-    to_port     = 2376
+    from_port   = 6001
+    to_port     = 6001
     protocol    = "tcp"
-    cidr_blocks = var.allowed_cidrs
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  # Coolify terminal websocket (for Cloudflare Tunnel)
+  ingress {
+    from_port   = 6002
+    to_port     = 6002
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
   }
 
   # Application ports range
@@ -329,9 +330,8 @@ resource "aws_ebs_volume" "coolify_data" {
 # User data script for Coolify installation
 locals {
   user_data = base64encode(templatefile("${path.module}/user_data.sh", {
-    bucket_name            = aws_s3_bucket.coolify_backups.bucket
-    region                 = var.region
-    cloudflare_tunnel_token = var.cloudflare_tunnel_token
+    bucket_name = aws_s3_bucket.coolify_backups.bucket
+    region      = var.region
   }))
 }
 
@@ -432,5 +432,16 @@ output "backup_bucket" {
 }
 
 output "cloudflare_tunnel_setup" {
-  value = "Configure your Cloudflare Tunnel to point *.stratpoint.io to ${aws_instance.coolify_server.private_ip}"
+  value = <<-EOT
+    Configure your Cloudflare Tunnel with these hostname mappings:
+    
+    1. coolify.stratpoint.io → ${aws_instance.coolify_server.private_ip}:8000 (HTTP)
+    2. realtime.stratpoint.io → ${aws_instance.coolify_server.private_ip}:6001 (HTTP)
+    3. terminal.stratpoint.io/ws → ${aws_instance.coolify_server.private_ip}:6002 (HTTP)
+    4. *.stratpoint.io → ${aws_instance.coolify_server.private_ip}:80 (HTTP) [for deployed apps]
+    
+    Then update Coolify's .env file with:
+    PUSHER_HOST=realtime.stratpoint.io
+    PUSHER_PORT=443
+  EOT
 }
