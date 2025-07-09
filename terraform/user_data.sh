@@ -6,7 +6,6 @@ set -e
 # Variables from Terraform
 BUCKET_NAME="${bucket_name}"
 REGION="${region}"
-CLOUDFLARE_TUNNEL_TOKEN="${cloudflare_tunnel_token}"
 
 # Log everything
 exec > >(tee /var/log/user-data.log)
@@ -46,6 +45,8 @@ ufw allow ssh
 ufw allow 80/tcp
 ufw allow 443/tcp
 ufw allow 8000/tcp
+ufw allow 6001/tcp   # Coolify realtime server
+ufw allow 6002/tcp   # Coolify terminal websocket
 ufw allow 3000:9000/tcp
 ufw --force enable
 
@@ -81,7 +82,6 @@ echo '/dev/nvme1n1 /data ext4 defaults,nofail 0 2' >> /etc/fstab
 mkdir -p /data/coolify
 mkdir -p /data/docker
 mkdir -p /data/backups
-mkdir -p /data/cloudflare
 chown -R ubuntu:ubuntu /data
 
 # Configure Docker to use data volume
@@ -91,41 +91,6 @@ rsync -aP /var/lib/docker/ /data/docker/
 mv /var/lib/docker /var/lib/docker.old
 ln -s /data/docker /var/lib/docker
 service docker start
-
-# Install Cloudflare Tunnel
-curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64.deb
-dpkg -i cloudflared.deb
-
-# Configure Cloudflare Tunnel if token is provided
-if [ ! -z "$CLOUDFLARE_TUNNEL_TOKEN" ]; then
-    echo "Configuring Cloudflare Tunnel..."
-    
-    # Create tunnel service
-    cat > /etc/systemd/system/cloudflared.service << EOF
-[Unit]
-Description=Cloudflare Tunnel
-After=network.target
-
-[Service]
-Type=simple
-User=ubuntu
-ExecStart=/usr/bin/cloudflared tunnel --no-autoupdate run --token $CLOUDFLARE_TUNNEL_TOKEN
-Restart=on-failure
-RestartSec=5s
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-    # Enable and start tunnel
-    systemctl daemon-reload
-    systemctl enable cloudflared
-    systemctl start cloudflared
-    
-    echo "Cloudflare Tunnel configured and started"
-else
-    echo "No Cloudflare Tunnel token provided, skipping tunnel setup"
-fi
 
 # Install CloudWatch agent
 wget https://s3.amazonaws.com/amazoncloudwatch-agent/ubuntu/arm64/latest/amazon-cloudwatch-agent.deb
@@ -206,11 +171,6 @@ cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json << EOF
                         "file_path": "/var/log/docker.log",
                         "log_group_name": "/aws/ec2/coolify",
                         "log_stream_name": "{instance_id}/docker"
-                    },
-                    {
-                        "file_path": "/var/log/cloudflared.log",
-                        "log_group_name": "/aws/ec2/coolify",
-                        "log_stream_name": "{instance_id}/cloudflared"
                     }
                 ]
             }
@@ -270,18 +230,10 @@ sleep 30
 # Create health check script
 cat > /usr/local/bin/coolify-health-check.sh << 'EOF'
 #!/bin/bash
-# Health check for Coolify and Cloudflare Tunnel
-
-# Check Coolify
+# Health check for Coolify
 if ! curl -f http://localhost:8000/api/health > /dev/null 2>&1; then
     echo "Coolify health check failed at $(date)" >> /var/log/coolify-health.log
     systemctl restart coolify
-fi
-
-# Check Cloudflare Tunnel
-if ! systemctl is-active --quiet cloudflared; then
-    echo "Cloudflare Tunnel is down at $(date)" >> /var/log/cloudflared-health.log
-    systemctl restart cloudflared
 fi
 EOF
 
@@ -295,16 +247,6 @@ EOF
 # Setup log rotation
 cat > /etc/logrotate.d/coolify << EOF
 /var/log/coolify*.log {
-    daily
-    missingok
-    rotate 7
-    compress
-    delaycompress
-    notifempty
-    create 644 root root
-}
-
-/var/log/cloudflared*.log {
     daily
     missingok
     rotate 7
@@ -335,14 +277,6 @@ aws cloudwatch put-metric-data --region $REGION --namespace "CoolifyServer" --me
 # Memory usage
 MEM_USAGE=$(free | grep Mem | awk '{printf "%.2f", $3/$2 * 100.0}')
 aws cloudwatch put-metric-data --region $REGION --namespace "CoolifyServer" --metric-data MetricName=MemoryUsage,Value=$MEM_USAGE,Unit=Percent
-
-# Cloudflare Tunnel status
-if systemctl is-active --quiet cloudflared; then
-    TUNNEL_STATUS=1
-else
-    TUNNEL_STATUS=0
-fi
-aws cloudwatch put-metric-data --region $REGION --namespace "CoolifyServer" --metric-data MetricName=CloudflareTunnelStatus,Value=$TUNNEL_STATUS,Unit=Count
 EOF
 
 chmod +x /usr/local/bin/coolify-monitor.sh
@@ -373,11 +307,6 @@ apt-get update -y
 apt-get upgrade -y
 apt-get autoremove -y
 
-# Update cloudflared
-curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64.deb
-dpkg -i cloudflared.deb
-systemctl restart cloudflared
-
 echo "Maintenance completed at $(date)"
 EOF
 
@@ -396,8 +325,8 @@ systemctl enable coolify
 echo "=== Coolify Installation Complete ==="
 echo "Timestamp: $(date)"
 echo "Access Coolify at: http://$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4):8000"
+echo "Private IP for Cloudflare Tunnel: $(curl -s http://169.254.169.254/latest/meta-data/local-ipv4)"
 echo "Check logs with: tail -f /var/log/user-data.log"
-echo "Cloudflare Tunnel status: systemctl status cloudflared"
 
 # Reboot to ensure everything is properly loaded
 shutdown -r +1 "Rebooting to complete Coolify installation"
