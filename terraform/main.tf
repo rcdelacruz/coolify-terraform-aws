@@ -1,4 +1,4 @@
-# terraform/main.tf
+# terraform/main.tf - Multi-Server Coolify Architecture
 terraform {
   required_version = ">= 1.0"
   required_providers {
@@ -33,10 +33,22 @@ variable "availability_zone" {
   default     = "us-east-1a"
 }
 
-variable "instance_type" {
-  description = "EC2 instance type"
+variable "control_instance_type" {
+  description = "EC2 instance type for Coolify control server"
+  type        = string
+  default     = "t4g.micro"
+}
+
+variable "remote_instance_type" {
+  description = "EC2 instance type for remote deployment servers"
   type        = string
   default     = "t4g.large"
+}
+
+variable "remote_server_count" {
+  description = "Number of remote servers to create"
+  type        = number
+  default     = 1
 }
 
 variable "key_name" {
@@ -142,9 +154,9 @@ resource "aws_route_table_association" "coolify_public_rta" {
 }
 
 # Security Groups
-resource "aws_security_group" "coolify_sg" {
-  name        = "coolify-sg"
-  description = "Security group for Coolify server"
+resource "aws_security_group" "coolify_control_sg" {
+  name        = "coolify-control-sg"
+  description = "Security group for Coolify control server"
   vpc_id      = aws_vpc.coolify_vpc.id
 
   # SSH access
@@ -155,22 +167,6 @@ resource "aws_security_group" "coolify_sg" {
     cidr_blocks = var.allowed_cidrs
   }
 
-  # HTTP (for Cloudflare Tunnel)
-  ingress {
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  # HTTPS (for Cloudflare Tunnel)
-  ingress {
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
   # Coolify dashboard (restrict to your IP)
   ingress {
     from_port   = 8000
@@ -179,28 +175,28 @@ resource "aws_security_group" "coolify_sg" {
     cidr_blocks = var.allowed_cidrs
   }
 
-  # Coolify realtime server (for Cloudflare Tunnel)
+  # Coolify realtime server (for WebSocket connections)
   ingress {
     from_port   = 6001
     to_port     = 6001
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = var.allowed_cidrs
   }
 
-  # Coolify terminal websocket (for Cloudflare Tunnel)
+  # Coolify terminal websocket
   ingress {
     from_port   = 6002
     to_port     = 6002
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = var.allowed_cidrs
   }
 
-  # Application ports range
+  # Communication with remote servers (internal)
   ingress {
-    from_port   = 3000
-    to_port     = 9000
+    from_port   = 22
+    to_port     = 22
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = ["10.0.0.0/16"]
   }
 
   egress {
@@ -211,11 +207,68 @@ resource "aws_security_group" "coolify_sg" {
   }
 
   tags = {
-    Name = "coolify-sg"
+    Name = "coolify-control-sg"
   }
 }
 
-# IAM Role for EC2 instance
+resource "aws_security_group" "coolify_remote_sg" {
+  name        = "coolify-remote-sg"
+  description = "Security group for Coolify remote deployment servers"
+  vpc_id      = aws_vpc.coolify_vpc.id
+
+  # SSH access from control server and your IP
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = concat(var.allowed_cidrs, ["10.0.0.0/16"])
+  }
+
+  # HTTP for applications
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  # HTTPS for applications
+  ingress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  # Application ports range for deployed services
+  ingress {
+    from_port   = 3000
+    to_port     = 9000
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  # Docker daemon port (for control server communication)
+  ingress {
+    from_port   = 2376
+    to_port     = 2376
+    protocol    = "tcp"
+    cidr_blocks = ["10.0.0.0/16"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "coolify-remote-sg"
+  }
+}
+
+# IAM Role for EC2 instances
 resource "aws_iam_role" "coolify_role" {
   name = "coolify-ec2-role"
 
@@ -313,8 +366,9 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "coolify_backups_e
   }
 }
 
-# EBS volumes
-resource "aws_ebs_volume" "coolify_data" {
+# EBS volumes for remote servers
+resource "aws_ebs_volume" "remote_data" {
+  count             = var.remote_server_count
   availability_zone = var.availability_zone
   size              = 100
   type              = "gp3"
@@ -323,32 +377,37 @@ resource "aws_ebs_volume" "coolify_data" {
   encrypted         = true
 
   tags = {
-    Name = "coolify-data"
+    Name = "coolify-remote-data-${count.index + 1}"
   }
 }
 
-# User data script for Coolify installation
+# User data scripts
 locals {
-  user_data = base64encode(templatefile("${path.module}/user_data.sh", {
+  control_user_data = base64encode(templatefile("${path.module}/control_user_data.sh", {
+    bucket_name = aws_s3_bucket.coolify_backups.bucket
+    region      = var.region
+  }))
+
+  remote_user_data = base64encode(templatefile("${path.module}/remote_user_data.sh", {
     bucket_name = aws_s3_bucket.coolify_backups.bucket
     region      = var.region
   }))
 }
 
-# Launch template for auto-scaling (optional)
-resource "aws_launch_template" "coolify_template" {
-  name_prefix   = "coolify-"
+# Launch template for control server
+resource "aws_launch_template" "coolify_control_template" {
+  name_prefix   = "coolify-control-"
   image_id      = data.aws_ami.ubuntu.id
-  instance_type = var.instance_type
+  instance_type = var.control_instance_type
   key_name      = var.key_name
 
-  vpc_security_group_ids = [aws_security_group.coolify_sg.id]
+  vpc_security_group_ids = [aws_security_group.coolify_control_sg.id]
 
   iam_instance_profile {
     name = aws_iam_instance_profile.coolify_profile.name
   }
 
-  user_data = local.user_data
+  user_data = local.control_user_data
 
   credit_specification {
     cpu_credits = "unlimited"
@@ -372,15 +431,59 @@ resource "aws_launch_template" "coolify_template" {
   tag_specifications {
     resource_type = "instance"
     tags = {
-      Name = "coolify-server"
+      Name = "coolify-control-server"
+      Type = "control"
     }
   }
 }
 
-# EC2 Instance
-resource "aws_instance" "coolify_server" {
+# Launch template for remote servers
+resource "aws_launch_template" "coolify_remote_template" {
+  name_prefix   = "coolify-remote-"
+  image_id      = data.aws_ami.ubuntu.id
+  instance_type = var.remote_instance_type
+  key_name      = var.key_name
+
+  vpc_security_group_ids = [aws_security_group.coolify_remote_sg.id]
+
+  iam_instance_profile {
+    name = aws_iam_instance_profile.coolify_profile.name
+  }
+
+  user_data = local.remote_user_data
+
+  credit_specification {
+    cpu_credits = "unlimited"
+  }
+
+  monitoring {
+    enabled = var.enable_monitoring
+  }
+
+  block_device_mappings {
+    device_name = "/dev/sda1"
+    ebs {
+      volume_size = 20
+      volume_type = "gp3"
+      encrypted   = true
+      iops        = 3000
+      throughput  = 125
+    }
+  }
+
+  tag_specifications {
+    resource_type = "instance"
+    tags = {
+      Name = "coolify-remote-server"
+      Type = "remote"
+    }
+  }
+}
+
+# Control Server Instance
+resource "aws_instance" "coolify_control_server" {
   launch_template {
-    id      = aws_launch_template.coolify_template.id
+    id      = aws_launch_template.coolify_control_template.id
     version = "$Latest"
   }
 
@@ -389,7 +492,8 @@ resource "aws_instance" "coolify_server" {
   disable_api_termination = true
 
   tags = {
-    Name = "coolify-server"
+    Name = "coolify-control-server"
+    Type = "control"
   }
 
   lifecycle {
@@ -397,11 +501,35 @@ resource "aws_instance" "coolify_server" {
   }
 }
 
-# Attach EBS volume
-resource "aws_volume_attachment" "coolify_data_attachment" {
+# Remote Server Instances
+resource "aws_instance" "coolify_remote_servers" {
+  count = var.remote_server_count
+
+  launch_template {
+    id      = aws_launch_template.coolify_remote_template.id
+    version = "$Latest"
+  }
+
+  subnet_id              = aws_subnet.coolify_public_subnet.id
+  availability_zone      = var.availability_zone
+  disable_api_termination = true
+
+  tags = {
+    Name = "coolify-remote-server-${count.index + 1}"
+    Type = "remote"
+  }
+
+  lifecycle {
+    ignore_changes = [user_data]
+  }
+}
+
+# Attach EBS volumes to remote servers
+resource "aws_volume_attachment" "remote_data_attachment" {
+  count       = var.remote_server_count
   device_name = "/dev/sdf"
-  volume_id   = aws_ebs_volume.coolify_data.id
-  instance_id = aws_instance.coolify_server.id
+  volume_id   = aws_ebs_volume.remote_data[count.index].id
+  instance_id = aws_instance.coolify_remote_servers[count.index].id
 }
 
 # CloudWatch Log Group
@@ -411,37 +539,83 @@ resource "aws_cloudwatch_log_group" "coolify_logs" {
 }
 
 # Outputs
-output "public_ip" {
-  value = aws_instance.coolify_server.public_ip
+output "control_server_public_ip" {
+  value       = aws_instance.coolify_control_server.public_ip
+  description = "Public IP of the Coolify control server"
 }
 
-output "private_ip" {
-  value = aws_instance.coolify_server.private_ip
+output "control_server_private_ip" {
+  value       = aws_instance.coolify_control_server.private_ip
+  description = "Private IP of the Coolify control server"
 }
 
-output "coolify_url" {
-  value = "http://${aws_instance.coolify_server.public_ip}:8000"
+output "remote_servers_public_ips" {
+  value       = aws_instance.coolify_remote_servers[*].public_ip
+  description = "Public IPs of the remote deployment servers"
 }
 
-output "ssh_command" {
-  value = "ssh -i ~/.ssh/${var.key_name}.pem ubuntu@${aws_instance.coolify_server.public_ip}"
+output "remote_servers_private_ips" {
+  value       = aws_instance.coolify_remote_servers[*].private_ip
+  description = "Private IPs of the remote deployment servers"
+}
+
+output "coolify_dashboard_url" {
+  value       = "http://${aws_instance.coolify_control_server.public_ip}:8000"
+  description = "URL to access Coolify dashboard"
+}
+
+output "control_ssh_command" {
+  value       = "ssh -i ~/.ssh/${var.key_name}.pem ubuntu@${aws_instance.coolify_control_server.public_ip}"
+  description = "SSH command for control server"
+}
+
+output "remote_ssh_commands" {
+  value = [
+    for i, ip in aws_instance.coolify_remote_servers[*].public_ip :
+    "ssh -i ~/.ssh/${var.key_name}.pem ubuntu@${ip}  # Remote server ${i + 1}"
+  ]
+  description = "SSH commands for remote servers"
 }
 
 output "backup_bucket" {
-  value = aws_s3_bucket.coolify_backups.bucket
+  value       = aws_s3_bucket.coolify_backups.bucket
+  description = "S3 bucket for backups"
 }
 
-output "cloudflare_tunnel_setup" {
+output "setup_instructions" {
   value = <<-EOT
-    Configure your Cloudflare Tunnel with these hostname mappings:
     
-    1. coolify.stratpoint.io → ${aws_instance.coolify_server.private_ip}:8000 (HTTP)
-    2. realtime.stratpoint.io → ${aws_instance.coolify_server.private_ip}:6001 (HTTP)
-    3. terminal.stratpoint.io/ws → ${aws_instance.coolify_server.private_ip}:6002 (HTTP)
-    4. *.stratpoint.io → ${aws_instance.coolify_server.private_ip}:80 (HTTP) [for deployed apps]
+    🚀 Coolify Multi-Server Setup Complete!
     
-    Then update Coolify's .env file with:
-    PUSHER_HOST=realtime.stratpoint.io
-    PUSHER_PORT=443
+    Architecture:
+    • Control Server (t4g.micro): ${aws_instance.coolify_control_server.public_ip}
+    • Remote Servers (t4g.large): ${join(", ", aws_instance.coolify_remote_servers[*].public_ip)}
+    
+    Next Steps:
+    1. Access Coolify dashboard: http://${aws_instance.coolify_control_server.public_ip}:8000
+    2. Complete initial setup in Coolify dashboard
+    3. Add remote servers in Coolify:
+       - Go to Settings → Servers → Add Server
+       - Type: Remote Server
+       - For each remote server:
+         * Name: remote-server-1, remote-server-2, etc.
+         * Host: ${join(", ", aws_instance.coolify_remote_servers[*].private_ip)}
+         * Port: 22
+         * User: ubuntu
+         * Private Key: Use the same key pair as control server
+    
+    4. Optional - Configure Cloudflare Tunnel:
+       - coolify.yourdomain.com → ${aws_instance.coolify_control_server.private_ip}:8000
+       - realtime.yourdomain.com → ${aws_instance.coolify_control_server.private_ip}:6001
+       - terminal.yourdomain.com/ws → ${aws_instance.coolify_control_server.private_ip}:6002
+       - *.yourdomain.com → Load balance across remote servers or use specific server IPs
+    
+    Cost Estimation:
+    • Control Server (t4g.micro): ~$8/month
+    • Remote Servers (t4g.large × ${var.remote_server_count}): ~$${53 * var.remote_server_count}/month
+    • Storage & Networking: ~$15/month
+    • Total: ~$${8 + (53 * var.remote_server_count) + 15}/month
+    
   EOT
+  description = "Setup instructions and next steps"
 }
