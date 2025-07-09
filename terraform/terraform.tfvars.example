@@ -9,8 +9,8 @@ availability_zone = "us-east-1a"
 instance_type = "t4g.large"
 key_name     = "your-key-pair-name"  # REQUIRED: Create this in AWS console first
 
-# Domain Configuration (optional)
-domain_name = "yourdomain.com"  # Leave empty "" if not using custom domain
+# Cloudflare Tunnel Configuration
+cloudflare_tunnel_token = "your-cloudflare-tunnel-token"  # Get from Cloudflare dashboard for *.stratpoint.io
 
 # Security Configuration
 allowed_cidrs = [
