@@ -44,14 +44,15 @@ variable "key_name" {
   type        = string
 }
 
-variable "domain_name" {
-  description = "Domain name for Coolify (optional)"
+variable "cloudflare_tunnel_token" {
+  description = "Cloudflare Tunnel token for stratpoint.io wildcard"
   type        = string
   default     = ""
+  sensitive   = true
 }
 
 variable "allowed_cidrs" {
-  description = "CIDR blocks allowed to access Coolify"
+  description = "CIDR blocks allowed to access SSH and Coolify dashboard"
   type        = list(string)
   default     = ["0.0.0.0/0"] # Restrict this in production
 }
@@ -161,7 +162,7 @@ resource "aws_security_group" "coolify_sg" {
     cidr_blocks = var.allowed_cidrs
   }
 
-  # HTTP
+  # HTTP (for Cloudflare Tunnel)
   ingress {
     from_port   = 80
     to_port     = 80
@@ -169,7 +170,7 @@ resource "aws_security_group" "coolify_sg" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  # HTTPS
+  # HTTPS (for Cloudflare Tunnel)
   ingress {
     from_port   = 443
     to_port     = 443
@@ -177,7 +178,7 @@ resource "aws_security_group" "coolify_sg" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  # Coolify dashboard (8000)
+  # Coolify dashboard (restrict to your IP)
   ingress {
     from_port   = 8000
     to_port     = 8000
@@ -325,20 +326,12 @@ resource "aws_ebs_volume" "coolify_data" {
   }
 }
 
-# Elastic IP
-resource "aws_eip" "coolify_eip" {
-  domain = "vpc"
-  tags = {
-    Name = "coolify-eip"
-  }
-}
-
 # User data script for Coolify installation
 locals {
   user_data = base64encode(templatefile("${path.module}/user_data.sh", {
-    bucket_name = aws_s3_bucket.coolify_backups.bucket
-    region      = var.region
-    domain_name = var.domain_name
+    bucket_name            = aws_s3_bucket.coolify_backups.bucket
+    region                 = var.region
+    cloudflare_tunnel_token = var.cloudflare_tunnel_token
   }))
 }
 
@@ -404,12 +397,6 @@ resource "aws_instance" "coolify_server" {
   }
 }
 
-# Attach EIP to instance
-resource "aws_eip_association" "coolify_eip_assoc" {
-  instance_id   = aws_instance.coolify_server.id
-  allocation_id = aws_eip.coolify_eip.id
-}
-
 # Attach EBS volume
 resource "aws_volume_attachment" "coolify_data_attachment" {
   device_name = "/dev/sdf"
@@ -423,47 +410,27 @@ resource "aws_cloudwatch_log_group" "coolify_logs" {
   retention_in_days = 7
 }
 
-# Route 53 (optional)
-resource "aws_route53_zone" "coolify_zone" {
-  count = var.domain_name != "" ? 1 : 0
-  name  = var.domain_name
-}
-
-resource "aws_route53_record" "coolify_a" {
-  count   = var.domain_name != "" ? 1 : 0
-  zone_id = aws_route53_zone.coolify_zone[0].zone_id
-  name    = var.domain_name
-  type    = "A"
-  ttl     = 300
-  records = [aws_eip.coolify_eip.public_ip]
-}
-
-resource "aws_route53_record" "coolify_wildcard" {
-  count   = var.domain_name != "" ? 1 : 0
-  zone_id = aws_route53_zone.coolify_zone[0].zone_id
-  name    = "*.${var.domain_name}"
-  type    = "A"
-  ttl     = 300
-  records = [aws_eip.coolify_eip.public_ip]
-}
-
 # Outputs
 output "public_ip" {
-  value = aws_eip.coolify_eip.public_ip
+  value = aws_instance.coolify_server.public_ip
+}
+
+output "private_ip" {
+  value = aws_instance.coolify_server.private_ip
 }
 
 output "coolify_url" {
-  value = "http://${aws_eip.coolify_eip.public_ip}:8000"
+  value = "http://${aws_instance.coolify_server.public_ip}:8000"
 }
 
 output "ssh_command" {
-  value = "ssh -i ~/.ssh/${var.key_name}.pem ubuntu@${aws_eip.coolify_eip.public_ip}"
+  value = "ssh -i ~/.ssh/${var.key_name}.pem ubuntu@${aws_instance.coolify_server.public_ip}"
 }
 
 output "backup_bucket" {
   value = aws_s3_bucket.coolify_backups.bucket
 }
 
-output "nameservers" {
-  value = var.domain_name != "" ? aws_route53_zone.coolify_zone[0].name_servers : []
+output "cloudflare_tunnel_setup" {
+  value = "Configure your Cloudflare Tunnel to point *.stratpoint.io to ${aws_instance.coolify_server.private_ip}"
 }
