@@ -1,23 +1,124 @@
-# terraform/terraform.tfvars.example
-# Copy this file to terraform.tfvars and fill in your values
+# terraform/terraform.tfvars.example - Multi-Server Architecture
+# Copy this file to terraform.tfvars and customize your values
+
+#==============================================================================
+# REQUIRED VARIABLES - You MUST set these
+#==============================================================================
 
 # AWS Configuration
 region            = "us-east-1"
 availability_zone = "us-east-1a"
 
-# EC2 Configuration
-instance_type = "t4g.large"
-key_name     = "your-key-pair-name"  # REQUIRED: Create this in AWS console first
+# EC2 Key Pair (REQUIRED - create this in AWS console first)
+key_name = "your-key-pair-name"
 
-# Security Configuration
+#==============================================================================
+# SECURITY CONFIGURATION - IMPORTANT!
+#==============================================================================
+
+# CIDR blocks allowed to access SSH and Coolify dashboard
+# SECURITY: Replace with your actual IP address(es)
 allowed_cidrs = [
-  "203.0.113.0/32",    # Replace with your IP address
+  "203.0.113.0/32",    # Replace with your public IP
   "198.51.100.0/24"    # Replace with your office/team IP range
 ]
 
-# Monitoring and Backup
-enable_monitoring       = true
-backup_retention_days   = 7
+#==============================================================================
+# SERVER CONFIGURATION
+#==============================================================================
 
-# NOTE: Configure your Cloudflare Tunnel manually in the Cloudflare dashboard
-# after deployment using the hostname mappings from terraform output
+# Control Server (manages deployments, runs Coolify dashboard)
+control_instance_type = "t4g.micro"    # Options: t4g.micro, t4g.small, t4g.medium, t4g.large
+
+# Remote Servers (run your applications)
+remote_instance_type = "t4g.large"     # Options: t4g.large, t4g.xlarge, m6g.large, c6g.large
+remote_server_count  = 2               # Number of remote servers (1-10)
+
+#==============================================================================
+# STORAGE CONFIGURATION
+#==============================================================================
+
+# Volume sizes in GB
+control_root_volume_size = 20          # Control server root volume
+remote_root_volume_size  = 20          # Remote server root volume  
+remote_data_volume_size  = 100         # Remote server data volume (for Docker/apps)
+
+#==============================================================================
+# PROJECT CONFIGURATION
+#==============================================================================
+
+# Project identification
+project_name = "coolify"
+environment  = "prod"                  # Options: dev, staging, prod
+
+# Optional domain configuration (for Cloudflare Tunnel)
+domain_name = "coolify.yourdomain.com" # Set to "" if not using custom domain
+
+#==============================================================================
+# MONITORING & BACKUP
+#==============================================================================
+
+# CloudWatch monitoring
+enable_monitoring    = true
+log_retention_days   = 7               # CloudWatch log retention (1-3653 days)
+
+# S3 backup configuration  
+backup_retention_days = 7              # How long to keep backups (1-365 days)
+
+#==============================================================================
+# ADVANCED CONFIGURATION (Optional)
+#==============================================================================
+
+# Network customization
+# vpc_cidr           = "10.0.0.0/16"    # VPC CIDR block
+# public_subnet_cidr = "10.0.1.0/24"    # Public subnet CIDR
+
+# Security
+# enable_termination_protection = true   # Prevent accidental instance termination
+# enable_cloudflare_tunnel      = true   # Configure for Cloudflare Tunnel
+
+# Resource naming (optional)
+# name_prefix = "mycompany"              # Prefix for all resource names
+# name_suffix = "v1"                     # Suffix for all resource names
+
+# Additional tags for all resources
+# additional_tags = {
+#   Department = "Engineering"
+#   CostCenter = "Infrastructure"
+#   Owner      = "devops-team"
+# }
+
+#==============================================================================
+# COST ESTIMATES (Reference Only - Do Not Uncomment)
+#==============================================================================
+
+# With default settings (t4g.micro control + 2x t4g.large remote):
+# • Control Server: ~$8/month
+# • Remote Servers: ~$134/month (2x $67)
+# • Storage: ~$15/month
+# • Other (networking, backup, monitoring): ~$10/month
+# • TOTAL: ~$167/month
+#
+# Cost optimization tips:
+# 1. Use t4g.small for control server if you need more performance
+# 2. Reduce remote_server_count for smaller workloads
+# 3. Use smaller remote_data_volume_size if you don't need 100GB
+# 4. Consider t4g.medium remote servers for lighter workloads
+
+#==============================================================================
+# EXAMPLE CONFIGURATIONS
+#==============================================================================
+
+# Development Environment (Low Cost ~$35/month):
+# control_instance_type = "t4g.micro"
+# remote_instance_type  = "t4g.small"  
+# remote_server_count   = 1
+# remote_data_volume_size = 50
+# environment = "dev"
+
+# Production Environment (High Performance ~$300/month):
+# control_instance_type = "t4g.small"
+# remote_instance_type  = "t4g.xlarge"
+# remote_server_count   = 3
+# remote_data_volume_size = 200
+# environment = "prod"
