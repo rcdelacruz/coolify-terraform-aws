@@ -20,47 +20,7 @@ terraform {
   # }
 }
 
-# Variables
-variable "region" {
-  description = "AWS region"
-  type        = string
-  default     = "us-east-1"
-}
-
-variable "availability_zone" {
-  description = "Availability zone for EBS volumes"
-  type        = string
-  default     = "us-east-1a"
-}
-
-variable "instance_type" {
-  description = "EC2 instance type"
-  type        = string
-  default     = "t4g.large"
-}
-
-variable "key_name" {
-  description = "EC2 Key Pair name"
-  type        = string
-}
-
-variable "allowed_cidrs" {
-  description = "CIDR blocks allowed to access SSH and Coolify dashboard"
-  type        = list(string)
-  default     = ["0.0.0.0/0"] # Restrict this in production
-}
-
-variable "enable_monitoring" {
-  description = "Enable detailed CloudWatch monitoring"
-  type        = bool
-  default     = true
-}
-
-variable "backup_retention_days" {
-  description = "Number of days to retain backups"
-  type        = number
-  default     = 7
-}
+# Variables are defined in variables.tf
 
 # Provider configuration
 provider "aws" {
@@ -74,12 +34,22 @@ data "aws_ami" "ubuntu" {
 
   filter {
     name   = "name"
-    values = ["ubuntu/images/hvm-ssd/ubuntu-22.04-lts-arm64-server-*"]
+    values = ["ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-arm64-server-*"]
   }
 
   filter {
     name   = "virtualization-type"
     values = ["hvm"]
+  }
+
+  filter {
+    name   = "architecture"
+    values = ["arm64"]
+  }
+
+  filter {
+    name   = "state"
+    values = ["available"]
   }
 }
 
@@ -100,7 +70,9 @@ resource "aws_vpc" "coolify_vpc" {
   enable_dns_support   = true
 
   tags = {
-    Name = "coolify-vpc"
+    Name        = "${var.project_name}-${var.environment}-vpc"
+    Project     = var.project_name
+    Environment = var.environment
   }
 }
 
@@ -108,7 +80,9 @@ resource "aws_internet_gateway" "coolify_igw" {
   vpc_id = aws_vpc.coolify_vpc.id
 
   tags = {
-    Name = "coolify-igw"
+    Name        = "${var.project_name}-${var.environment}-igw"
+    Project     = var.project_name
+    Environment = var.environment
   }
 }
 
@@ -276,7 +250,14 @@ resource "aws_iam_instance_profile" "coolify_profile" {
 
 # S3 bucket for backups
 resource "aws_s3_bucket" "coolify_backups" {
-  bucket = "coolify-backups-${random_password.coolify_password.id}"
+  bucket = "${var.project_name}-${var.environment}-backups-${random_password.coolify_password.id}"
+
+  tags = {
+    Name        = "${var.project_name}-${var.environment}-backups"
+    Project     = var.project_name
+    Environment = var.environment
+    Purpose     = "Coolify Backups"
+  }
 }
 
 resource "aws_s3_bucket_versioning" "coolify_backups_versioning" {
@@ -292,6 +273,10 @@ resource "aws_s3_bucket_lifecycle_configuration" "coolify_backups_lifecycle" {
   rule {
     id     = "backup_lifecycle"
     status = "Enabled"
+
+    filter {
+      prefix = ""
+    }
 
     expiration {
       days = var.backup_retention_days
@@ -316,14 +301,16 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "coolify_backups_e
 # EBS volumes
 resource "aws_ebs_volume" "coolify_data" {
   availability_zone = var.availability_zone
-  size              = 100
+  size              = var.data_volume_size
   type              = "gp3"
   iops              = 3000
   throughput        = 125
   encrypted         = true
 
   tags = {
-    Name = "coolify-data"
+    Name        = "${var.project_name}-${var.environment}-data"
+    Project     = var.project_name
+    Environment = var.environment
   }
 }
 
@@ -361,7 +348,7 @@ resource "aws_launch_template" "coolify_template" {
   block_device_mappings {
     device_name = "/dev/sda1"
     ebs {
-      volume_size = 20
+      volume_size = var.root_volume_size
       volume_type = "gp3"
       encrypted   = true
       iops        = 3000
@@ -372,7 +359,9 @@ resource "aws_launch_template" "coolify_template" {
   tag_specifications {
     resource_type = "instance"
     tags = {
-      Name = "coolify-server"
+      Name        = "${var.project_name}-${var.environment}-server"
+      Project     = var.project_name
+      Environment = var.environment
     }
   }
 }
@@ -384,12 +373,14 @@ resource "aws_instance" "coolify_server" {
     version = "$Latest"
   }
 
-  subnet_id              = aws_subnet.coolify_public_subnet.id
-  availability_zone      = var.availability_zone
-  disable_api_termination = true
+  subnet_id               = aws_subnet.coolify_public_subnet.id
+  availability_zone       = var.availability_zone
+  disable_api_termination = var.enable_termination_protection
 
   tags = {
-    Name = "coolify-server"
+    Name        = "${var.project_name}-${var.environment}-server"
+    Project     = var.project_name
+    Environment = var.environment
   }
 
   lifecycle {
@@ -397,7 +388,26 @@ resource "aws_instance" "coolify_server" {
   }
 }
 
-# Attach EBS volume
+# Elastic IP for static public IP
+resource "aws_eip" "coolify_eip" {
+  domain = "vpc"
+
+  tags = {
+    Name        = "${var.project_name}-${var.environment}-eip"
+    Project     = var.project_name
+    Environment = var.environment
+  }
+
+  depends_on = [aws_internet_gateway.coolify_igw]
+}
+
+# Associate Elastic IP with instance
+resource "aws_eip_association" "coolify_eip_assoc" {
+  instance_id   = aws_instance.coolify_server.id
+  allocation_id = aws_eip.coolify_eip.id
+}
+
+# Attach EBS volume (using correct device name for ARM instances)
 resource "aws_volume_attachment" "coolify_data_attachment" {
   device_name = "/dev/sdf"
   volume_id   = aws_ebs_volume.coolify_data.id
@@ -410,38 +420,4 @@ resource "aws_cloudwatch_log_group" "coolify_logs" {
   retention_in_days = 7
 }
 
-# Outputs
-output "public_ip" {
-  value = aws_instance.coolify_server.public_ip
-}
-
-output "private_ip" {
-  value = aws_instance.coolify_server.private_ip
-}
-
-output "coolify_url" {
-  value = "http://${aws_instance.coolify_server.public_ip}:8000"
-}
-
-output "ssh_command" {
-  value = "ssh -i ~/.ssh/${var.key_name}.pem ubuntu@${aws_instance.coolify_server.public_ip}"
-}
-
-output "backup_bucket" {
-  value = aws_s3_bucket.coolify_backups.bucket
-}
-
-output "cloudflare_tunnel_setup" {
-  value = <<-EOT
-    Configure your Cloudflare Tunnel with these hostname mappings:
-    
-    1. coolify.stratpoint.io → ${aws_instance.coolify_server.private_ip}:8000 (HTTP)
-    2. realtime.stratpoint.io → ${aws_instance.coolify_server.private_ip}:6001 (HTTP)
-    3. terminal.stratpoint.io/ws → ${aws_instance.coolify_server.private_ip}:6002 (HTTP)
-    4. *.stratpoint.io → ${aws_instance.coolify_server.private_ip}:80 (HTTP) [for deployed apps]
-    
-    Then update Coolify's .env file with:
-    PUSHER_HOST=realtime.stratpoint.io
-    PUSHER_PORT=443
-  EOT
-}
+# Outputs are defined in outputs.tf

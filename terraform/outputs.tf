@@ -1,7 +1,7 @@
 # Terraform outputs
 output "public_ip" {
-  description = "Public IP address of the Coolify server"
-  value       = aws_instance.coolify_server.public_ip
+  description = "Public IP address of the Coolify server (Elastic IP)"
+  value       = aws_eip.coolify_eip.public_ip
 }
 
 output "private_ip" {
@@ -11,12 +11,12 @@ output "private_ip" {
 
 output "coolify_url" {
   description = "URL to access Coolify dashboard"
-  value       = "http://${aws_instance.coolify_server.public_ip}:8000"
+  value       = "http://${aws_eip.coolify_eip.public_ip}:8000"
 }
 
 output "ssh_command" {
   description = "SSH command to connect to the server"
-  value       = "ssh -i ~/.ssh/${var.key_name}.pem ubuntu@${aws_instance.coolify_server.public_ip}"
+  value       = "ssh -i ~/.ssh/${var.key_name}.pem ubuntu@${aws_eip.coolify_eip.public_ip}"
 }
 
 output "backup_bucket" {
@@ -51,14 +51,14 @@ output "data_volume_id" {
 
 output "cloudflare_tunnel_setup" {
   description = "Cloudflare Tunnel configuration instructions"
-  value = <<-EOT
+  value       = <<-EOT
     Configure your Cloudflare Tunnel with these hostname mappings:
-    
+
     1. coolify.stratpoint.io → ${aws_instance.coolify_server.private_ip}:8000 (HTTP)
     2. realtime.stratpoint.io → ${aws_instance.coolify_server.private_ip}:6001 (HTTP)
     3. terminal.stratpoint.io/ws → ${aws_instance.coolify_server.private_ip}:6002 (HTTP)
     4. *.stratpoint.io → ${aws_instance.coolify_server.private_ip}:80 (HTTP) [for deployed apps]
-    
+
     Then update Coolify's .env file with:
     PUSHER_HOST=realtime.stratpoint.io
     PUSHER_PORT=443
@@ -67,17 +67,22 @@ output "cloudflare_tunnel_setup" {
 
 output "initial_setup_commands" {
   description = "Commands to run after deployment"
-  value = <<-EOT
+  value       = <<-EOT
     # Connect to your server
-    ${format("ssh -i ~/.ssh/%s.pem ubuntu@%s", var.key_name, aws_instance.coolify_server.public_ip)}
-    
+    ${format("ssh -i ~/.ssh/%s.pem ubuntu@%s", var.key_name, aws_eip.coolify_eip.public_ip)}
+
     # Check Coolify status
     sudo docker ps | grep coolify
-    
+
     # View installation logs
     sudo tail -f /var/log/user-data.log
-    
+
     # Access Coolify dashboard
-    echo "Coolify URL: http://${aws_instance.coolify_server.public_ip}:8000"
+    echo "Coolify URL: http://${aws_eip.coolify_eip.public_ip}:8000"
   EOT
+}
+
+output "elastic_ip_id" {
+  description = "Elastic IP allocation ID"
+  value       = aws_eip.coolify_eip.id
 }

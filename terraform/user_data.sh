@@ -68,15 +68,35 @@ echo '/swapfile none swap sw 0 0' >> /etc/fstab
 
 # Mount additional EBS volume
 echo "Waiting for EBS volume..."
-while [ ! -e /dev/nvme1n1 ]; do
+# For ARM instances, the device might be nvme1n1 or nvme2n1
+DEVICE=""
+for i in {1..5}; do
+    if [ -e /dev/nvme1n1 ]; then
+        DEVICE="/dev/nvme1n1"
+        break
+    elif [ -e /dev/nvme2n1 ]; then
+        DEVICE="/dev/nvme2n1"
+        break
+    fi
     sleep 5
 done
 
-# Format and mount data volume
-mkfs.ext4 /dev/nvme1n1
+if [ -z "$DEVICE" ]; then
+    echo "ERROR: Could not find EBS volume device"
+    exit 1
+fi
+
+echo "Found EBS volume at $DEVICE"
+
+# Check if device is already formatted
+if ! blkid $DEVICE; then
+    echo "Formatting EBS volume..."
+    mkfs.ext4 $DEVICE
+fi
+
 mkdir -p /data
-mount /dev/nvme1n1 /data
-echo '/dev/nvme1n1 /data ext4 defaults,nofail 0 2' >> /etc/fstab
+mount $DEVICE /data
+echo "$DEVICE /data ext4 defaults,nofail 0 2" >> /etc/fstab
 
 # Create directories
 mkdir -p /data/coolify
@@ -184,31 +204,33 @@ systemctl enable amazon-cloudwatch-agent
 systemctl start amazon-cloudwatch-agent
 
 # Setup backup script
-cat > /data/backups/backup-coolify.sh << 'EOF'
+cat > /data/backups/backup-coolify.sh << EOF
 #!/bin/bash
 set -e
 
 BACKUP_DIR="/data/backups"
-TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-BACKUP_FILE="coolify-backup-$TIMESTAMP.tar.gz"
+TIMESTAMP=\$(date +%Y%m%d_%H%M%S)
+BACKUP_FILE="coolify-backup-\$TIMESTAMP.tar.gz"
+BUCKET_NAME="${bucket_name}"
+REGION="${region}"
 
-echo "Starting backup at $(date)"
+echo "Starting backup at \$(date)"
 
 # Create backup
 cd /data
-tar -czf "$BACKUP_DIR/$BACKUP_FILE" \
+tar -czf "\$BACKUP_DIR/\$BACKUP_FILE" \
     --exclude='./backups' \
     --exclude='./docker/containers/*/logs' \
     --exclude='./docker/tmp' \
     ./coolify
 
 # Upload to S3
-aws s3 cp "$BACKUP_DIR/$BACKUP_FILE" "s3://$BUCKET_NAME/"
+aws s3 cp "\$BACKUP_DIR/\$BACKUP_FILE" "s3://\$BUCKET_NAME/" --region \$REGION
 
 # Clean up local backup
-rm "$BACKUP_DIR/$BACKUP_FILE"
+rm "\$BACKUP_DIR/\$BACKUP_FILE"
 
-echo "Backup completed at $(date)"
+echo "Backup completed at \$(date)"
 EOF
 
 chmod +x /data/backups/backup-coolify.sh
@@ -231,9 +253,11 @@ sleep 30
 cat > /usr/local/bin/coolify-health-check.sh << 'EOF'
 #!/bin/bash
 # Health check for Coolify
-if ! curl -f http://localhost:8000/api/health > /dev/null 2>&1; then
+# Check if Coolify container is running and responding
+if ! docker ps | grep -q coolify || ! curl -f http://localhost:8000 > /dev/null 2>&1; then
     echo "Coolify health check failed at $(date)" >> /var/log/coolify-health.log
-    systemctl restart coolify
+    # Try to restart Coolify
+    cd /data/coolify/source && docker compose restart
 fi
 EOF
 
