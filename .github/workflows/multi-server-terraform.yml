@@ -1,0 +1,275 @@
+name: 'Multi-Server Coolify CI/CD'
+
+on:
+  push:
+    branches: [ "multi-server-architecture" ]
+    paths: ['terraform/**']
+  pull_request:
+    branches: [ "multi-server-architecture" ]
+    paths: ['terraform/**']
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to perform'
+        required: true
+        default: 'plan'
+        type: choice
+        options:
+        - plan
+        - apply
+        - destroy
+      environment:
+        description: 'Environment to deploy'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+        - dev
+        - staging
+        - prod
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+env:
+  TF_VERSION: '1.5.0'
+  TF_VAR_environment: ${{ github.event.inputs.environment || 'dev' }}
+
+jobs:
+  validate:
+    name: 'Terraform Validate'
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: ${{ env.TF_VERSION }}
+
+    - name: Terraform Format Check
+      id: fmt
+      run: terraform fmt -check -recursive
+      working-directory: terraform
+      continue-on-error: true
+
+    - name: Terraform Init
+      id: init
+      run: terraform init
+      working-directory: terraform
+
+    - name: Terraform Validate
+      id: validate
+      run: terraform validate -no-color
+      working-directory: terraform
+
+  plan:
+    name: 'Terraform Plan'
+    runs-on: ubuntu-latest
+    needs: validate
+    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'plan')
+    environment: ${{ github.event.inputs.environment || 'dev' }}
+    
+    defaults:
+      run:
+        shell: bash
+        working-directory: terraform
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: ${{ env.TF_VERSION }}
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
+
+    - name: Terraform Init
+      run: terraform init
+
+    - name: Create terraform.tfvars from secrets
+      run: |
+        cat > terraform.tfvars << EOF
+        region = "${{ secrets.AWS_REGION || 'us-east-1' }}"
+        availability_zone = "${{ secrets.AWS_AVAILABILITY_ZONE || 'us-east-1a' }}"
+        key_name = "${{ secrets.EC2_KEY_NAME }}"
+        allowed_cidrs = ["${{ secrets.ALLOWED_CIDR || '0.0.0.0/0' }}"]
+        control_instance_type = "${{ secrets.CONTROL_INSTANCE_TYPE || 't4g.micro' }}"
+        remote_instance_type = "${{ secrets.REMOTE_INSTANCE_TYPE || 't4g.large' }}"
+        remote_server_count = ${{ secrets.REMOTE_SERVER_COUNT || 1 }}
+        domain_name = "${{ secrets.DOMAIN_NAME || '' }}"
+        environment = "${{ env.TF_VAR_environment }}"
+        project_name = "coolify"
+        EOF
+
+    - name: Terraform Plan
+      id: plan
+      run: terraform plan -detailed-exitcode -no-color
+      continue-on-error: true
+
+    - name: Update Pull Request
+      uses: actions/github-script@v7
+      if: github.event_name == 'pull_request'
+      env:
+        PLAN: "${{ steps.plan.outputs.stdout }}"
+      with:
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        script: |
+          const output = `## 🏗️ Multi-Server Coolify Terraform Plan
+          
+          #### Environment: \`${{ env.TF_VAR_environment }}\`
+          #### Plan Result: \`${{ steps.plan.outcome }}\`
+          
+          ### Architecture Configuration:
+          - **Control Server**: ${{ secrets.CONTROL_INSTANCE_TYPE || 't4g.micro' }}
+          - **Remote Servers**: ${{ secrets.REMOTE_SERVER_COUNT || 1 }}x ${{ secrets.REMOTE_INSTANCE_TYPE || 't4g.large' }}
+          - **Region**: ${{ secrets.AWS_REGION || 'us-east-1' }}
+          
+          <details><summary>Show Full Plan</summary>
+          
+          \`\`\`
+          ${process.env.PLAN}
+          \`\`\`
+          
+          </details>
+          
+          *Pusher: @${{ github.actor }}, Action: \`${{ github.event_name }}\`*`;
+
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: output
+          })
+
+  apply:
+    name: 'Terraform Apply'
+    runs-on: ubuntu-latest
+    needs: [validate]
+    if: |
+      (github.ref == 'refs/heads/multi-server-architecture' && github.event_name == 'push') ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'apply')
+    environment: ${{ github.event.inputs.environment || 'dev' }}
+    
+    defaults:
+      run:
+        shell: bash
+        working-directory: terraform
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: ${{ env.TF_VERSION }}
+        terraform_wrapper: false
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
+
+    - name: Terraform Init
+      run: terraform init
+
+    - name: Create terraform.tfvars from secrets
+      run: |
+        cat > terraform.tfvars << EOF
+        region = "${{ secrets.AWS_REGION || 'us-east-1' }}"
+        availability_zone = "${{ secrets.AWS_AVAILABILITY_ZONE || 'us-east-1a' }}"
+        key_name = "${{ secrets.EC2_KEY_NAME }}"
+        allowed_cidrs = ["${{ secrets.ALLOWED_CIDR || '0.0.0.0/0' }}"]
+        control_instance_type = "${{ secrets.CONTROL_INSTANCE_TYPE || 't4g.micro' }}"
+        remote_instance_type = "${{ secrets.REMOTE_INSTANCE_TYPE || 't4g.large' }}"
+        remote_server_count = ${{ secrets.REMOTE_SERVER_COUNT || 1 }}
+        domain_name = "${{ secrets.DOMAIN_NAME || '' }}"
+        environment = "${{ env.TF_VAR_environment }}"
+        project_name = "coolify"
+        EOF
+
+    - name: Terraform Apply
+      id: apply
+      run: terraform apply -auto-approve -input=false
+
+    - name: Create deployment summary
+      run: |
+        control_ip=$(terraform output -raw control_server_public_ip)
+        dashboard_url=$(terraform output -raw coolify_dashboard_url)
+        backup_bucket=$(terraform output -raw backup_bucket_name)
+        
+        echo "## 🚀 Multi-Server Coolify Deployment Complete!" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 📊 Deployment Details:" >> $GITHUB_STEP_SUMMARY
+        echo "- **Environment**: ${{ env.TF_VAR_environment }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Control Server**: ${control_ip}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Dashboard**: ${dashboard_url}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Backup Bucket**: ${backup_bucket}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 🔗 Next Steps:" >> $GITHUB_STEP_SUMMARY
+        echo "1. Access dashboard: ${dashboard_url}" >> $GITHUB_STEP_SUMMARY
+        echo "2. Complete Coolify setup" >> $GITHUB_STEP_SUMMARY
+        echo "3. Add remote servers to Coolify" >> $GITHUB_STEP_SUMMARY
+        echo "4. Deploy your first application" >> $GITHUB_STEP_SUMMARY
+
+  destroy:
+    name: 'Terraform Destroy'
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'destroy'
+    environment: ${{ github.event.inputs.environment || 'dev' }}
+    
+    defaults:
+      run:
+        shell: bash
+        working-directory: terraform
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: ${{ env.TF_VERSION }}
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
+
+    - name: Terraform Init
+      run: terraform init
+
+    - name: Create terraform.tfvars from secrets
+      run: |
+        cat > terraform.tfvars << EOF
+        region = "${{ secrets.AWS_REGION || 'us-east-1' }}"
+        availability_zone = "${{ secrets.AWS_AVAILABILITY_ZONE || 'us-east-1a' }}"
+        key_name = "${{ secrets.EC2_KEY_NAME }}"
+        allowed_cidrs = ["${{ secrets.ALLOWED_CIDR || '0.0.0.0/0' }}"]
+        control_instance_type = "${{ secrets.CONTROL_INSTANCE_TYPE || 't4g.micro' }}"
+        remote_instance_type = "${{ secrets.REMOTE_INSTANCE_TYPE || 't4g.large' }}"
+        remote_server_count = ${{ secrets.REMOTE_SERVER_COUNT || 1 }}
+        domain_name = "${{ secrets.DOMAIN_NAME || '' }}"
+        environment = "${{ env.TF_VAR_environment }}"
+        project_name = "coolify"
+        EOF
+
+    - name: Terraform Destroy
+      run: terraform destroy -auto-approve -input=false
