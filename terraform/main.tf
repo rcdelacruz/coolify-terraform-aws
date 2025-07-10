@@ -12,12 +12,22 @@ data "aws_ami" "ubuntu" {
 
   filter {
     name   = "name"
-    values = ["ubuntu/images/hvm-ssd/ubuntu-22.04-lts-arm64-server-*"]
+    values = ["ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-arm64-server-*"]
   }
 
   filter {
     name   = "virtualization-type"
     values = ["hvm"]
+  }
+
+  filter {
+    name   = "architecture"
+    values = ["arm64"]
+  }
+
+  filter {
+    name   = "state"
+    values = ["available"]
   }
 }
 
@@ -284,6 +294,10 @@ resource "aws_s3_bucket_lifecycle_configuration" "coolify_backups_lifecycle" {
     id     = "backup_lifecycle"
     status = "Enabled"
 
+    filter {
+      prefix = ""
+    }
+
     expiration {
       days = var.backup_retention_days
     }
@@ -416,9 +430,9 @@ resource "aws_instance" "coolify_control_server" {
     version = "$Latest"
   }
 
-  subnet_id                   = aws_subnet.coolify_public_subnet.id
-  availability_zone           = var.availability_zone
-  disable_api_termination     = var.enable_termination_protection
+  subnet_id               = aws_subnet.coolify_public_subnet.id
+  availability_zone       = var.availability_zone
+  disable_api_termination = var.enable_termination_protection
 
   tags = merge(local.common_tags, {
     Name = local.control_instance_name
@@ -439,9 +453,9 @@ resource "aws_instance" "coolify_remote_servers" {
     version = "$Latest"
   }
 
-  subnet_id                   = aws_subnet.coolify_public_subnet.id
-  availability_zone           = var.availability_zone
-  disable_api_termination     = var.enable_termination_protection
+  subnet_id               = aws_subnet.coolify_public_subnet.id
+  availability_zone       = var.availability_zone
+  disable_api_termination = var.enable_termination_protection
 
   tags = merge(local.common_tags, {
     Name = "${local.remote_instance_prefix}-${count.index + 1}"
