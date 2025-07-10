@@ -68,7 +68,7 @@ locals {
     environment = var.environment
     project_name = var.project_name
     server_type = "remote"
-    control_server_ip = aws_instance.coolify_control_server.private_ip
+    # Note: control_server_ip is referenced in outputs, not locals to avoid circular dependency
   }
   
   # User data scripts (base64 encoded)
