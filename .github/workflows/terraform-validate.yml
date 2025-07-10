@@ -1,16 +1,35 @@
-name: Terraform Validation
+# This workflow has been replaced by multi-server-terraform.yml
+# Keeping this file for reference but disabling triggers
+
+name: Terraform Validation (DISABLED)
+
+# Disabled - triggers commented out to prevent conflicts
+# on:
+#   push:
+#     branches: [ master, multi-server-architecture ]
+#   pull_request:
+#     branches: [ master ]
 
 on:
-  push:
-    branches: [ master, multi-server-architecture ]
-  pull_request:
-    branches: [ master ]
+  # Only run manually if needed for debugging
+  workflow_dispatch:
 
 jobs:
   validate:
     runs-on: ubuntu-latest
     
     steps:
+    - name: Info
+      run: |
+        echo "⚠️  This workflow has been disabled and replaced by multi-server-terraform.yml"
+        echo "The new workflow includes:"
+        echo "- Secret validation"
+        echo "- Multi-environment support"
+        echo "- Proper error handling"
+        echo "- Complete deployment capabilities"
+        echo ""
+        echo "To run Terraform validation, use the 'Multi-Server Coolify CI/CD' workflow instead."
+        
     - name: Checkout code
       uses: actions/checkout@v4
       
@@ -19,24 +38,21 @@ jobs:
       with:
         terraform_version: "~1.0"
         
-    - name: Terraform Format Check
+    - name: Terraform Format Check (Syntax Only)
       run: |
         cd terraform
         terraform fmt -check -recursive
         
-    - name: Terraform Init
+    - name: Terraform Init (No Backend)
       run: |
         cd terraform
         terraform init -backend=false
         
-    - name: Terraform Validate
+    - name: Terraform Validate (Syntax Only)
       run: |
         cd terraform
         terraform validate
         
-    - name: Terraform Plan (Dry Run)
-      run: |
-        cd terraform
-        terraform plan -var="key_name=test-key"
-      env:
-        TF_VAR_key_name: "test-key"
+    # Removed terraform plan step that was causing failures
+    # Plan step requires AWS credentials and proper variable configuration
+    # Use multi-server-terraform.yml workflow for full validation with plan
