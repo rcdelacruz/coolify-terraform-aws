@@ -30,7 +30,7 @@ variable "control_instance_type" {
   description = "EC2 instance type for Coolify control server (manages deployments)"
   type        = string
   default     = "t4g.micro"
-  
+
   validation {
     condition = contains([
       "t4g.micro", "t4g.small", "t4g.medium", "t4g.large",
@@ -44,7 +44,7 @@ variable "remote_instance_type" {
   description = "EC2 instance type for remote deployment servers (runs applications)"
   type        = string
   default     = "t4g.large"
-  
+
   validation {
     condition = contains([
       "t4g.micro", "t4g.small", "t4g.medium", "t4g.large", "t4g.xlarge",
@@ -59,7 +59,7 @@ variable "remote_server_count" {
   description = "Number of remote deployment servers to create"
   type        = number
   default     = 1
-  
+
   validation {
     condition     = var.remote_server_count >= 1 && var.remote_server_count <= 10
     error_message = "Remote server count must be between 1 and 10."
@@ -76,7 +76,7 @@ variable "allowed_cidrs" {
   description = "CIDR blocks allowed to access SSH and Coolify dashboard"
   type        = list(string)
   default     = ["0.0.0.0/0"]
-  
+
   validation {
     condition = alltrue([
       for cidr in var.allowed_cidrs : can(cidrhost(cidr, 0))
@@ -108,7 +108,7 @@ variable "remote_data_volume_size" {
   description = "Size of remote server data volume in GB (for Docker and applications)"
   type        = number
   default     = 100
-  
+
   validation {
     condition     = var.remote_data_volume_size >= 20 && var.remote_data_volume_size <= 1000
     error_message = "Remote data volume size must be between 20 and 1000 GB."
@@ -126,7 +126,7 @@ variable "backup_retention_days" {
   description = "Number of days to retain S3 backups"
   type        = number
   default     = 7
-  
+
   validation {
     condition     = var.backup_retention_days >= 1 && var.backup_retention_days <= 365
     error_message = "Backup retention must be between 1 and 365 days."
@@ -137,7 +137,7 @@ variable "log_retention_days" {
   description = "Number of days to retain CloudWatch logs"
   type        = number
   default     = 7
-  
+
   validation {
     condition = contains([
       1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1827, 3653
@@ -151,7 +151,7 @@ variable "vpc_cidr" {
   description = "CIDR block for VPC"
   type        = string
   default     = "10.0.0.0/16"
-  
+
   validation {
     condition     = can(cidrhost(var.vpc_cidr, 0))
     error_message = "VPC CIDR must be a valid CIDR block."
@@ -162,7 +162,7 @@ variable "public_subnet_cidr" {
   description = "CIDR block for public subnet"
   type        = string
   default     = "10.0.1.0/24"
-  
+
   validation {
     condition     = can(cidrhost(var.public_subnet_cidr, 0))
     error_message = "Public subnet CIDR must be a valid CIDR block."

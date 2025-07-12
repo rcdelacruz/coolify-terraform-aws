@@ -1,13 +1,27 @@
-# Complete Setup Guide: Coolify on AWS with Cloudflare Tunnel
+# Complete Setup Guide: Multi-Server Coolify on AWS with Cloudflare Tunnel
+
+## 🏗️ Architecture Overview
+
+This guide deploys a **multi-server Coolify architecture** that separates control and application workloads:
+
+- **Control Server** (t4g.micro): Runs Coolify dashboard and orchestrates deployments
+- **Remote Servers** (t4g.large × N): Execute application workloads with dedicated resources
+- **Shared Infrastructure**: VPC, S3 backups, CloudWatch monitoring, security groups
+
+### Benefits of Multi-Server Architecture:
+- **Scalability**: Add/remove remote servers based on demand
+- **Resource Isolation**: Control server dedicated to management, remote servers for apps
+- **Cost Efficiency**: Right-size each server type for its specific role
+- **High Availability**: Applications distributed across multiple servers
 
 ## Prerequisites Checklist
 
 Before starting, ensure you have:
 
 - [ ] **AWS Account** with billing enabled
-- [ ] **Cloudflare Account** with a domain (e.g., `yourdomain.com`)
+- [ ] **Cloudflare Account** with a domain (e.g., `yourdomain.com`) - Optional
 - [ ] **Local Machine** with admin access
-- [ ] **Credit Card** for AWS charges (~$65-75/month)
+- [ ] **Credit Card** for AWS charges (~$95-167/month depending on configuration)
 
 ## Phase 1: Local Environment Setup
 
@@ -133,27 +147,57 @@ Edit `terraform.tfvars` with your specific values:
 region            = "us-east-1"
 availability_zone = "us-east-1a"
 
-# EC2 Configuration
-instance_type = "t4g.large"
-key_name     = "coolify-key"  # The key pair you created
+# Multi-Server Configuration
+control_instance_type = "t4g.micro"    # Control server (manages deployments)
+remote_instance_type  = "t4g.large"    # Remote servers (run applications)
+remote_server_count   = 2              # Number of remote servers (1-10)
+key_name             = "coolify-key"   # The key pair you created
 
 # Security Configuration - IMPORTANT: Replace with your IP
 allowed_cidrs = [
   "YOUR.PUBLIC.IP.ADDRESS/32"  # Get from https://whatismyipaddress.com
 ]
 
+# Storage Configuration
+control_root_volume_size = 20   # Control server root volume (GB)
+remote_root_volume_size  = 20   # Remote server root volume (GB)
+remote_data_volume_size  = 100  # Remote server data volume (GB) - for Docker/apps
+
 # Project Configuration
 project_name = "coolify"
-environment  = "prod"
-
-# Storage Configuration
-data_volume_size = 100  # GB
-root_volume_size = 20   # GB
+environment  = "prod"           # Options: dev, staging, prod
 
 # Monitoring and Backup
 enable_monitoring       = true
 backup_retention_days   = 7
-enable_termination_protection = true
+log_retention_days      = 7     # CloudWatch log retention
+
+# Domain Configuration (Optional - for Cloudflare Tunnel)
+domain_name              = ""    # Set to your domain if using Cloudflare Tunnel
+enable_cloudflare_tunnel = true # Configure security groups for Cloudflare Tunnel
+
+# Security
+enable_termination_protection = true # Prevent accidental instance termination
+```
+
+### Configuration Examples:
+
+**Development Environment (~$35/month):**
+```hcl
+control_instance_type = "t4g.micro"
+remote_instance_type  = "t4g.small"
+remote_server_count   = 1
+remote_data_volume_size = 50
+environment = "dev"
+```
+
+**Production Environment (~$300/month):**
+```hcl
+control_instance_type = "t4g.small"
+remote_instance_type  = "t4g.xlarge"
+remote_server_count   = 3
+remote_data_volume_size = 200
+environment = "prod"
 ```
 
 **To find your public IP:**
@@ -202,161 +246,225 @@ terraform apply
 
 **Expected Output:**
 ```
-Apply complete! Resources: 15 added, 0 changed, 0 destroyed.
+Apply complete! Resources: 22 added, 0 changed, 0 destroyed.
 
 Outputs:
 
-coolify_url = "http://54.123.45.67:8000"
-public_ip = "54.123.45.67"
-ssh_command = "ssh -i ~/.ssh/coolify-key.pem ubuntu@54.123.45.67"
+🚀 Coolify Multi-Server Architecture Deployed Successfully!
+
+📊 Architecture Overview:
+├── Control Server (t4g.micro): 54.123.45.67
+└── Remote Servers (t4g.large × 2):
+    ├── Remote 1: 54.123.45.68
+    └── Remote 2: 54.123.45.69
+
+💰 Estimated Monthly Cost: $167.00
+
+🔗 Quick Access:
+• Coolify Dashboard: http://54.123.45.67:8000
+• Control Server SSH: ssh -i ~/.ssh/coolify-key.pem ubuntu@54.123.45.67
 ```
 
-### Step 9: Wait for Installation
+### Step 9: Wait for Installation and Add Remote Servers
 
 ```bash
-# Monitor the installation progress
-ssh -i ~/.ssh/coolify-key.pem ubuntu@$(terraform output -raw public_ip)
+# Monitor the control server installation progress
+ssh -i ~/.ssh/coolify-key.pem ubuntu@$(terraform output -raw control_server_public_ip)
 sudo tail -f /var/log/user-data.log
 
 # Wait for this message:
-# "=== Coolify Installation Complete ==="
+# "=== Coolify Control Server Installation Complete ==="
+
+# You can also check if Coolify is running:
+cd /data/coolify/source
+sudo docker compose ps
+
+# Check if Coolify is accessible:
+curl http://localhost:8000
 ```
+
+**Important:** The control server installs Coolify, while remote servers prepare Docker and wait to be added to Coolify.
+
+### Step 10: Access Coolify and Add Remote Servers
+
+1. **Access Coolify Dashboard:**
+```bash
+# Get the dashboard URL
+terraform output coolify_dashboard_url
+# Open in browser: http://[control-server-ip]:8000
+```
+
+2. **Complete Coolify Setup:**
+   - Create admin account
+   - Complete initial setup wizard
+
+3. **Add Remote Servers to Coolify:**
+   - Go to: **Settings** → **Servers** → **Add Server**
+   - For each remote server, use these details:
+
+```bash
+# Get remote server details
+terraform output remote_servers_details
+```
+
+**For each remote server:**
+- **Name**: `remote-server-1`, `remote-server-2`, etc.
+- **Host**: Use the **private IP** from terraform output
+- **Port**: `22`
+- **User**: `ubuntu`
+- **Private Key**: Same key pair as control server (`~/.ssh/coolify-key.pem`)
+
+4. **Verify Remote Server Connection:**
+   - Coolify will test the connection
+   - Each remote server should show as "Connected" in the dashboard
 
 ## Phase 5: Cloudflare Tunnel Setup
 
-### Step 10: Install Cloudflared (Local Machine)
+### Step 10: Create Cloudflare Tunnel via Dashboard
 
-**On macOS:**
+**Important:** The current Coolify documentation recommends creating tunnels through the Cloudflare Dashboard rather than using the CLI.
+
+1. **Go to Cloudflare Dashboard:**
+   - Navigate to **Zero Trust** → **Networks** → **Tunnels**
+   - Click **Create a tunnel**
+   - Choose **Cloudflared** as the connector type
+   - Name your tunnel: `coolify-tunnel`
+   - Click **Save tunnel**
+
+2. **Install Cloudflared on Control Server:**
 ```bash
-brew install cloudflared
+# SSH to control server
+ssh -i ~/.ssh/coolify-key.pem ubuntu@$(terraform output -raw control_server_public_ip)
+
+# Install cloudflared
+curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+sudo dpkg -i cloudflared.deb
+
+# Copy the token from Cloudflare Dashboard and run:
+sudo cloudflared service install [YOUR_TUNNEL_TOKEN]
 ```
 
-**On Windows:**
-```powershell
-# Download from https://github.com/cloudflare/cloudflared/releases
-# Or use winget:
-winget install --id Cloudflare.cloudflared
-```
-
-**On Linux:**
+3. **Get Server IPs for Configuration:**
 ```bash
-wget https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
-sudo dpkg -i cloudflared-linux-amd64.deb
+# Get control server private IP (for Coolify dashboard)
+terraform output control_server_private_ip
+# Example: 10.0.1.10
+
+# Get control server public IP (for tunnel setup)
+terraform output control_server_public_ip
+# Example: 54.123.45.67
 ```
 
-### Step 11: Create Cloudflare Tunnel
+### Step 11: Configure Tunnel Hostnames
 
-1. **Login to Cloudflare:**
-```bash
-cloudflared tunnel login
-# This opens browser - login to your Cloudflare account
+In the Cloudflare Dashboard, configure these **Public Hostnames** for your tunnel:
+
+**Required Hostnames (based on Coolify documentation):**
+
+1. **Coolify Dashboard:**
+   - **Subdomain:** `app`
+   - **Domain:** `yourdomain.com`
+   - **Path:** (leave empty)
+   - **Service Type:** HTTP
+   - **URL:** `localhost:8000`
+
+2. **Realtime Server:**
+   - **Subdomain:** `realtime`
+   - **Domain:** `yourdomain.com`
+   - **Path:** (leave empty)
+   - **Service Type:** HTTP
+   - **URL:** `localhost:6001`
+
+3. **Terminal WebSocket:**
+   - **Subdomain:** `app`
+   - **Domain:** `yourdomain.com`
+   - **Path:** `/terminal/ws`
+   - **Service Type:** HTTP
+   - **URL:** `localhost:6002`
+
+**Example Configuration:**
+```
+Hostnames:
+1. app.yourdomain.com/terminal/ws → localhost:6002 (WebSocket terminal)
+2. realtime.yourdomain.com → localhost:6001 (Realtime server)
+3. app.yourdomain.com → localhost:8000 (Coolify dashboard)
+Type: HTTP
 ```
 
-2. **Create Tunnel:**
-```bash
-cloudflared tunnel create coolify-tunnel
-# Note the tunnel ID from output
-```
+### Step 12: Configure DNS Records
 
-3. **Get Server Private IP:**
-```bash
-terraform output private_ip
-# Example: 10.0.1.123
-```
+The DNS records are automatically created when you add public hostnames in the Cloudflare Dashboard. Verify these records exist:
 
-### Step 12: Configure Tunnel
-
-1. **Create tunnel config file:**
-```bash
-# Create config directory
-mkdir -p ~/.cloudflared
-
-# Create config file
-cat > ~/.cloudflared/config.yml << EOF
-tunnel: coolify-tunnel
-credentials-file: ~/.cloudflared/[TUNNEL-ID].json
-
-ingress:
-  # Coolify Dashboard
-  - hostname: coolify.yourdomain.com
-    service: http://[PRIVATE-IP]:8000
-
-  # Realtime Server
-  - hostname: realtime.yourdomain.com
-    service: http://[PRIVATE-IP]:6001
-
-  # Terminal WebSocket
-  - hostname: terminal.yourdomain.com
-    service: http://[PRIVATE-IP]:6002
-    path: /ws
-
-  # Wildcard for deployed apps
-  - hostname: "*.yourdomain.com"
-    service: http://[PRIVATE-IP]:80
-
-  # Catch-all
-  - service: http_status:404
-EOF
-```
-
-**Replace:**
-- `[TUNNEL-ID]` with your actual tunnel ID
-- `[PRIVATE-IP]` with the private IP from terraform output
-- `yourdomain.com` with your actual domain
-
-### Step 13: Configure DNS Records
-
-1. **Go to Cloudflare Dashboard** → Your Domain → DNS
-2. **Add CNAME records:**
-   - `coolify` → `[TUNNEL-ID].cfargotunnel.com`
+1. **Go to Cloudflare Dashboard** → Your Domain → **DNS**
+2. **Verify CNAME records exist:**
+   - `app` → `[TUNNEL-ID].cfargotunnel.com`
    - `realtime` → `[TUNNEL-ID].cfargotunnel.com`
-   - `terminal` → `[TUNNEL-ID].cfargotunnel.com`
-   - `*` → `[TUNNEL-ID].cfargotunnel.com` (wildcard)
 
-### Step 14: Start Tunnel
-
-```bash
-# Test the tunnel
-cloudflared tunnel run coolify-tunnel
-
-# If working, install as service (optional)
-sudo cloudflared service install
-```
+**Note:** DNS records are automatically managed by Cloudflare when using the dashboard method.
 
 ## Phase 6: Coolify Configuration
 
-### Step 15: Access Coolify
+### Step 13: Configure Coolify for Tunnel
 
-1. **Open browser:** `https://coolify.yourdomain.com`
-2. **Complete setup wizard:**
-   - Create admin account
-   - Set up your first project
-
-### Step 16: Configure Coolify for Tunnel
-
-SSH into your server and update Coolify configuration:
+SSH into your control server and update Coolify configuration:
 
 ```bash
-# SSH to server
-ssh -i ~/.ssh/coolify-key.pem ubuntu@$(terraform output -raw public_ip)
+# SSH to control server
+ssh -i ~/.ssh/coolify-key.pem ubuntu@$(terraform output -raw control_server_public_ip)
 
-# Edit Coolify environment
-sudo nano /data/coolify/source/.env
+# Navigate to Coolify source directory
+cd /data/coolify/source
 
-# Add these lines:
+# Edit Coolify environment file
+sudo nano .env
+
+# Add these lines to the .env file:
 PUSHER_HOST=realtime.yourdomain.com
 PUSHER_PORT=443
 
-# Restart Coolify
-cd /data/coolify/source
+# Save and exit (Ctrl+X, then Y, then Enter)
+
+# Restart Coolify to apply changes
 sudo docker compose restart
 ```
 
+**Important:** Replace `yourdomain.com` with your actual domain name.
+
+### Step 14: Access Coolify
+
+1. **Open browser:** `https://app.yourdomain.com`
+2. **Complete setup wizard:**
+   - Create admin account
+   - Complete initial setup wizard
+
+### Step 15: Add Remote Servers to Coolify
+
+1. **Get remote server details:**
+```bash
+# Get remote server details
+terraform output remote_servers_details
+```
+
+2. **Add Remote Servers:**
+   - Go to: **Settings** → **Servers** → **Add Server**
+   - For each remote server, use these details:
+
+**For each remote server:**
+- **Name**: `remote-server-1`, `remote-server-2`, etc.
+- **Host**: Use the **private IP** from terraform output
+- **Port**: `22`
+- **User**: `ubuntu`
+- **Private Key**: Same key pair as control server (`~/.ssh/coolify-key.pem`)
+
+3. **Verify Remote Server Connection:**
+   - Coolify will test the connection
+   - Each remote server should show as "Connected" in the dashboard
+
 ## Phase 7: Verification
 
-### Step 17: Test Everything
+### Step 16: Test Everything
 
-1. **Dashboard:** `https://coolify.yourdomain.com` ✅
+1. **Dashboard:** `https://app.yourdomain.com` ✅
 2. **Realtime:** Should work automatically ✅
 3. **Terminal:** Test in Coolify dashboard ✅
 4. **Deploy test app:** Should be accessible at `appname.yourdomain.com` ✅
@@ -367,18 +475,38 @@ sudo docker compose restart
 
 1. **Tunnel not connecting:**
 ```bash
-# Check tunnel status
-cloudflared tunnel info coolify-tunnel
+# Check tunnel status on control server
+ssh -i ~/.ssh/coolify-key.pem ubuntu@$(terraform output -raw control_server_public_ip)
+sudo systemctl status cloudflared
 
-# Check logs
-cloudflared tunnel run coolify-tunnel --loglevel debug
+# Check tunnel logs
+sudo journalctl -u cloudflared -f
+
+# Restart tunnel service if needed
+sudo systemctl restart cloudflared
 ```
 
 2. **Coolify not accessible:**
 ```bash
-# Check if Coolify is running
-ssh -i ~/.ssh/coolify-key.pem ubuntu@$(terraform output -raw public_ip)
-sudo docker ps | grep coolify
+# Check if Coolify is running on control server
+ssh -i ~/.ssh/coolify-key.pem ubuntu@$(terraform output -raw control_server_public_ip)
+
+# Check Coolify Docker containers
+cd /data/coolify/source
+sudo docker compose ps
+
+# Check Coolify logs
+sudo docker compose logs
+
+# Restart Coolify if needed
+sudo docker compose restart
+
+# Check if port 8000 is accessible
+curl http://localhost:8000
+
+# Check remote server connectivity
+terraform output remote_ssh_commands
+# SSH to each remote server and verify Docker is running
 ```
 
 3. **DNS not resolving:**
@@ -387,21 +515,62 @@ sudo docker ps | grep coolify
 
 ## Cost Management
 
-**Monthly costs (~$65-75):**
-- EC2 t4g.large: ~$53/month
-- 100GB GP3 storage: ~$8/month
-- 20GB root volume: ~$2/month
-- Elastic IP: ~$4/month
-- S3 backup storage: ~$2-5/month
-- CloudWatch logs: ~$1-2/month
+### Default Configuration (1 Control + 2 Remote Servers)
+**Monthly costs (~$167/month):**
+- Control Server (t4g.micro): ~$8/month
+- Remote Servers (2× t4g.large): ~$134/month
+- Storage (EBS volumes): ~$15/month
+- Networking & Backup: ~$10/month
+
+### Alternative Configurations
+
+**Development (~$35/month):**
+- Control: t4g.micro, Remote: 1× t4g.small
+- Ideal for testing and small applications
+
+**Production (~$300/month):**
+- Control: t4g.small, Remote: 3× t4g.xlarge
+- High-performance setup for demanding workloads
+
+**Cost Optimization Tips:**
+- Use `terraform output estimated_monthly_costs` to see detailed breakdown
+- Reduce `remote_server_count` for smaller workloads
+- Use smaller `remote_data_volume_size` if you don't need 100GB per server
+- Consider t4g.medium remote servers for lighter workloads
 
 ## Next Steps
 
-1. **Deploy your first application** in Coolify
-2. **Set up monitoring** with CloudWatch alarms
-3. **Configure backups** (already automated)
-4. **Review security settings** regularly
-5. **Scale resources** as needed
+1. **Deploy your first application** in Coolify:
+   - Choose a remote server for deployment
+   - Deploy from Git repository or Docker image
+   - Applications will be accessible at `appname.yourdomain.com`
+
+2. **Scale your infrastructure**:
+   - Add more remote servers: Update `remote_server_count` and run `terraform apply`
+   - Upgrade instance types for better performance
+   - Monitor resource usage in CloudWatch
+
+3. **Set up monitoring** with CloudWatch alarms
+4. **Configure backups** (already automated to S3)
+5. **Review security settings** regularly
+6. **Load balance applications** across multiple remote servers
+
+### Multi-Server Management Commands:
+
+```bash
+# View all servers
+terraform output remote_servers_details
+
+# Check costs
+terraform output estimated_monthly_costs
+
+# SSH to specific servers
+terraform output control_ssh_command
+terraform output remote_ssh_commands
+
+# Get architecture summary
+terraform output architecture_summary
+```
 
 ## Support
 
@@ -409,4 +578,15 @@ sudo docker ps | grep coolify
 - **Cloudflare Tunnel Docs:** https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/
 - **AWS Support:** https://aws.amazon.com/support/
 
-Your Coolify installation is now ready for production use! 🚀
+Your **Multi-Server Coolify** installation is now ready for production use! 🚀
+
+## 🎯 What You've Accomplished
+
+✅ **Deployed a scalable multi-server Coolify architecture**
+✅ **Separated control and application workloads for better resource management**
+✅ **Set up automated backups and monitoring**
+✅ **Configured security groups and encrypted storage**
+✅ **Prepared for Cloudflare Tunnel integration**
+✅ **Created a foundation that can scale from 1 to 10 remote servers**
+
+Your infrastructure is now ready to handle production workloads with the flexibility to scale as your needs grow!
